@@ -189,7 +189,7 @@
 
   /* --- Power-ups HUD --- */
   .powerups-hud { position: absolute; bottom: 82px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; pointer-events: auto; z-index: 11; }
-  .powerup-btn { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; font-size: 28px; display: flex; align-items: center; justify-content: center; position: relative; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 800; color: white; transition: all 0.2s; }
+  .powerup-btn { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; font-size: 28px; display: flex; align-items: center; justify-content: center; position: relative; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 800; color: white; transition: all 0.2s; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .powerup-btn { background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.2); }
   .powerup-btn:active { transform: scale(0.9); }
   .powerup-btn.disabled { opacity: 0.3; cursor: not-allowed; }
@@ -1832,10 +1832,10 @@ function endBombDrag(screenX, screenY) {
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera);
 
-  // Check each alien — generous hit radius
+  // Check each alien — very generous hit radius for mobile touch
   let hitAlien = null;
   let hitIdx = -1;
-  let bestDist = 1.5; // max hit distance
+  let bestDist = 2.5; // generous hit distance for fat fingers on mobile
   for (let i = 0; i < aliens.length; i++) {
     const a = aliens[i];
     const alienPos = a.mesh.position.clone();
@@ -4314,13 +4314,42 @@ document.getElementById('btnFrostField').onclick = () => usePowerup('frostfield'
 // Ghost toggle
 document.getElementById('btnGhost').onclick = toggleGhost;
 
-// ── Bonk bomb drag-and-drop ──
+// ── Bonk bomb drag-and-drop (mobile-friendly with pointer capture) ──
 const bombBtn = document.getElementById('btnBonkPU');
+
 bombBtn.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   e.stopPropagation();
+  // Capture pointer so all move/up events come to this element even if finger moves away
+  bombBtn.setPointerCapture(e.pointerId);
   startBombDrag(e.clientX, e.clientY);
 });
+
+bombBtn.addEventListener('pointermove', (e) => {
+  if (bombDragActive) {
+    e.preventDefault();
+    moveBombDrag(e.clientX, e.clientY);
+  }
+});
+
+bombBtn.addEventListener('pointerup', (e) => {
+  if (bombDragActive) {
+    e.preventDefault();
+    if (bombBtn.hasPointerCapture(e.pointerId)) {
+      bombBtn.releasePointerCapture(e.pointerId);
+    }
+    endBombDrag(e.clientX, e.clientY);
+  }
+});
+
+bombBtn.addEventListener('pointercancel', (e) => {
+  if (bombBtn.hasPointerCapture(e.pointerId)) {
+    bombBtn.releasePointerCapture(e.pointerId);
+  }
+  cancelBombDrag();
+});
+
+// Fallback: also listen on window for non-captured events
 window.addEventListener('pointermove', (e) => {
   if (bombDragActive) {
     e.preventDefault();
