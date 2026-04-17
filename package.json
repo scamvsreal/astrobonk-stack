@@ -1,0 +1,9 @@
+{
+  "name": "astrobonk-stack",
+  "version": "1.0.0",
+  "description": "AstroBonk Stack - Premium 3D Stack Tower Game",
+  "private": true,
+  "scripts": {
+    "start": "npx serve ."
+  }
+}
