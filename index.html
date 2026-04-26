@@ -877,8 +877,8 @@ function saveWorlds() { localStorage.setItem('st_worlds', JSON.stringify(worldsU
 
 <!-- ===== 3D GAME ===== -->
 <script type="importmap">{ "imports": {
-  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
 } }</script>
 <script type="module">
 import * as THREE from 'three';
@@ -905,7 +905,7 @@ function colorForHeight(h) {
 
 // ==================== THREE.JS SETUP ====================
 const canvas = document.getElementById('canvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.35;
@@ -916,12 +916,13 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05060d, 0.018);
 
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
 const CAM_OFFSET = new THREE.Vector3(7.5, 6, -7.5);
 camera.position.copy(CAM_OFFSET);
 const camLook = { y: 1.5 };
 
-// resize defined after post-processing setup below
+// IMPORTANT: size renderer BEFORE creating EffectComposer
+renderer.setSize(window.innerWidth, window.innerHeight, false);
 
 // Lights
 const key = new THREE.DirectionalLight(0xfff1d6, 1.6);
@@ -934,15 +935,22 @@ const fillLight = new THREE.DirectionalLight(0xff8ccb, 0.35); fillLight.position
 scene.add(new THREE.HemisphereLight(0x404a7a, 0x0a0812, 0.55));
 
 // ==================== POST-PROCESSING (BLOOM) ====================
-const composer = new EffectComposer(renderer);
+// Create render target with proper settings for bloom pipeline
+const _rtSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+const composerRT = new THREE.WebGLRenderTarget(_rtSize.x, _rtSize.y, {
+  type: THREE.HalfFloatType,
+  format: THREE.RGBAFormat,
+  colorSpace: THREE.LinearSRGBColorSpace
+});
+const composer = new EffectComposer(renderer, composerRT);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.35,  // strength — subtle glow
-  0.6,   // radius
-  0.85   // threshold — only bright areas bloom
+  0.3,   // strength — subtle glow
+  0.5,   // radius
+  0.88   // threshold — only bright areas bloom
 );
 composer.addPass(bloomPass);
 
@@ -950,9 +958,9 @@ composer.addPass(bloomPass);
 const colorGradeShader = {
   uniforms: {
     tDiffuse: { value: null },
-    uVignette: { value: 0.45 },
-    uSaturation: { value: 1.12 },
-    uContrast: { value: 1.05 },
+    uVignette: { value: 0.4 },
+    uSaturation: { value: 1.1 },
+    uContrast: { value: 1.04 },
   },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
@@ -962,21 +970,21 @@ const colorGradeShader = {
     void main() {
       vec4 tex = texture2D(tDiffuse, vUv);
       vec3 col = tex.rgb;
-      // Contrast
       col = (col - 0.5) * uContrast + 0.5;
-      // Saturation
       float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
       col = mix(vec3(lum), col, uSaturation);
-      // Vignette
-      vec2 uv = vUv * 2.0 - 1.0;
-      float vig = 1.0 - dot(uv * 0.5, uv * 0.5) * uVignette;
+      vec2 vc = vUv * 2.0 - 1.0;
+      float vig = 1.0 - dot(vc * 0.5, vc * 0.5) * uVignette;
       col *= vig;
-      gl_FragColor = vec4(col, tex.a);
+      gl_FragColor = vec4(col, 1.0);
     }
   `
 };
 const colorGradePass = new ShaderPass(colorGradeShader);
 composer.addPass(colorGradePass);
+
+// Post-processing availability flag (fallback if composer fails)
+let useComposer = true;
 
 // Resize handler (includes composer)
 function resize() {
@@ -984,10 +992,17 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  composer.setSize(w, h);
-  bloomPass.resolution.set(w, h);
+  if (useComposer) {
+    try {
+      composer.setSize(w, h);
+      bloomPass.resolution.set(w, h);
+    } catch(e) {
+      console.warn('EffectComposer resize failed, falling back to direct render', e);
+      useComposer = false;
+    }
+  }
 }
-resize(); window.addEventListener('resize', resize);
+window.addEventListener('resize', resize);
 
 // ==================== BLOCK SHADER ====================
 const blockVert = `
@@ -2308,19 +2323,28 @@ function cleanupAll() {
   for (const r of rings) { scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh.material.dispose(); }
   if (active) { scene.remove(active); active.geometry.dispose(); active.material.dispose(); }
   stack=[]; chunks=[]; particles=[]; rings=[]; active=null; allMats=[];
+  // Drain object pools to free memory
+  for (const m of particlePool) { m.geometry.dispose(); m.material.dispose(); }
+  particlePool.length = 0;
+  for (const m of chunkPool) { m.geometry.dispose(); m.material.dispose(); }
+  chunkPool.length = 0;
 }
 
 function resetTower() {
   cleanupAll();
+  // Reset replay state to prevent camera fights on new game
+  replayMode = false;
+  if (missedBlock) { scene.remove(missedBlock); missedBlock.geometry.dispose(); missedBlock.material.dispose(); missedBlock = null; }
   heightIndex = 0; score = 0; combo = 0;
   currentWorldIdx = 0;
   hitFreezeTimer = 0; camZoomPunch = 0; isGoldBlock = false;
+  cameraTilt = 0; shakeIntensity = 0;
   trailMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
   trailMeshes = [];
   // Reset new feature states
   if (comboZoneMesh) { scene.remove(comboZoneMesh); comboZoneMesh.geometry.dispose(); comboZoneMesh.material.dispose(); comboZoneMesh = null; }
   lastBlockWobbly = false; wobbleBlock = null; wobbleTimer = 0;
-  nextMysteryBlock = 15 + Math.floor(Math.random() * 6);
+  nextMysteryBlock = 15 + Math.floor(getDailyRandom() * 6);
   widthRestoreActive = false; extraLife = false;
   applyWorldInstant(0);
   updateScoreHUD(); updateComboBadge();
@@ -2432,7 +2456,7 @@ function spawnNext() {
   }
 
   // ── GOLD BLOCK (10% chance after block 8, 2x points) ──
-  isGoldBlock = heightIndex > 8 && Math.random() < 0.10;
+  isGoldBlock = heightIndex > 8 && getDailyRandom() < 0.10;
   if (isGoldBlock) {
     active.material.uniforms.uColorA.value.set(1, 0.85, 0.2);
     active.material.uniforms.uColorB.value.set(1, 0.65, 0.1);
@@ -2445,7 +2469,7 @@ function spawnNext() {
     active.material.uniforms.uColorA.value.set(1.0, 0.88, 0.3);
     active.material.uniforms.uColorB.value.set(1.0, 0.7, 0.15);
     active.material.uniforms.uColorC.value.set(1.0, 0.95, 0.5);
-    nextMysteryBlock = heightIndex + 15 + Math.floor(Math.random() * 6);
+    nextMysteryBlock = heightIndex + 15 + Math.floor(getDailyRandom() * 6);
     // Add spinning star particle on top
     const starGeo = new THREE.OctahedronGeometry(0.15, 0);
     const starMat = new THREE.MeshBasicMaterial({ color: 0xffe15a, transparent: true, opacity: 0.9 });
@@ -2459,7 +2483,7 @@ function spawnNext() {
   activeBlockType = 'normal';
   glassBlockHP = 2;
   if (!isGoldBlock && !active.userData.isMystery) {
-    const roll = Math.random();
+    const roll = getDailyRandom();
     let cumChance = 0;
     for (const [key, bt] of Object.entries(BLOCK_TYPES)) {
       if (key === 'normal') continue;
@@ -2681,7 +2705,7 @@ function updateActive(dt) {
         buddyOnMiss();
         synthGameOver(); triggerShake(18);
         updateMissionProgress('world', worldForHeight(heightIndex));
-        state = 'timeover';
+        state = 'gameover'; // block further input
         setTimeout(() => gameOver(), 650);
       }
     }
@@ -3302,8 +3326,8 @@ function spawnConfettiCeremony() {
     }, r * 250);
   }
   // Bloom pulse
-  bloomPass.strength = 0.8;
-  setTimeout(() => { bloomPass.strength = 0.35; }, 800);
+  if (useComposer) bloomPass.strength = 0.8;
+  setTimeout(() => { if (useComposer) bloomPass.strength = 0.3; }, 800);
   // Celebratory SFX — rising arpeggio
   try {
     audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
@@ -3394,14 +3418,14 @@ function updateDeathCam(dt) {
   camera.position.y = deathCamStartY + (deathCamTargetY - deathCamStartY) * ease * 0.4;
 
   // Slow-mo time dilation for bloom pulse
-  bloomPass.strength = 0.35 + ease * 0.3; // bloom intensifies
+  if (useComposer) bloomPass.strength = 0.3 + ease * 0.3; // bloom intensifies
 
   const lookY = deathCamTargetY + (1 - ease) * 2;
   camera.lookAt(0, lookY, 0);
 
   if (t >= 1) {
     state = 'gameover';
-    bloomPass.strength = 0.35; // reset bloom
+    if (useComposer) bloomPass.strength = 0.3; // reset bloom
     showGameOver();
   }
 }
@@ -4897,7 +4921,10 @@ function loop() {
   }
 
   // ═══ LOD: hide/show stack blocks based on distance from camera ═══
-  if (stack.length > 15) {
+  // Skip LOD during death cam (camera orbits, all blocks should be visible)
+  if (state === 'deathcam' || state === 'gameover') {
+    for (let i = 0; i < stack.length; i++) { stack[i].visible = true; stack[i].castShadow = true; }
+  } else if (stack.length > 15 && state === 'playing') {
     const camY = camera.position.y;
     for (let i = 0; i < stack.length - 5; i++) {
       const block = stack[i];
@@ -4906,7 +4933,7 @@ function loop() {
         block.visible = false;
       } else if (dist > 12) {
         block.visible = true;
-        block.castShadow = false; // no shadows for distant blocks
+        block.castShadow = false;
       } else {
         block.visible = true;
         block.castShadow = true;
@@ -4914,8 +4941,8 @@ function loop() {
     }
   }
 
-  // ═══ Camera update (skip during death cam — it manages its own camera) ═══
-  if (state !== 'deathcam') {
+  // ═══ Camera update (skip during death cam and replay — they manage their own camera) ═══
+  if (state !== 'deathcam' && !replayMode) {
     const idleX = Math.sin(now*0.0005)*0.15, idleZ = Math.cos(now*0.0004)*0.1;
     camera.position.x += ((CAM_OFFSET.x+idleX)-camera.position.x) * Math.min(1, dt*2);
     camera.position.z += ((CAM_OFFSET.z+idleZ)-camera.position.z) * Math.min(1, dt*2);
@@ -4949,7 +4976,11 @@ function loop() {
     camera.rotation.z = cameraTilt;
   }
 
-  composer.render();
+  if (useComposer) {
+    try { composer.render(); } catch(e) { useComposer = false; renderer.render(scene, camera); }
+  } else {
+    renderer.render(scene, camera);
+  }
   requestAnimationFrame(loop);
 }
 loop();
