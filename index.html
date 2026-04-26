@@ -2129,12 +2129,16 @@ function initializeDailyMissions() {
   if (stored !== today) {
     localStorage.setItem('dm_date', today);
     dailyMissions = [];
-    const used = new Set();
-    for (let i = 0; i < 3; i++) {
-      let idx, attempt = 0;
-      do { idx = Math.floor(seededRandom(today, i + attempt * 7) * MISSION_TYPES.length); attempt++; } while (used.has(idx) && attempt < 50);
-      used.add(idx);
-      const type = MISSION_TYPES[idx];
+    // Deterministic shuffle of MISSION_TYPES using seededRandom(today, ...), then take first 3.
+    // Guarantees uniqueness — old do-while could fall back to a duplicate when 50 attempts collided.
+    const order = MISSION_TYPES.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(seededRandom(today, i + 200) * (i + 1));
+      const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+    }
+    const pickCount = Math.min(3, MISSION_TYPES.length);
+    for (let i = 0; i < pickCount; i++) {
+      const type = MISSION_TYPES[order[i]];
       const targetIdx = Math.floor(seededRandom(today, i + 100) * type.targets.length);
       dailyMissions.push({ type: type.id, name: type.name, target: type.targets[targetIdx], progress: 0 });
     }
@@ -2903,7 +2907,7 @@ function place() {
 
     // ═══ Combo Zone: show guide on top of placed block for next perfect ═══
     if (combo >= 3) {
-      if (comboZoneMesh) { scene.remove(comboZoneMesh); comboZoneMesh.geometry.dispose(); comboZoneMesh.material.dispose(); }
+      if (comboZoneMesh) { scene.remove(comboZoneMesh); comboZoneMesh.geometry.dispose(); comboZoneMesh.material.dispose(); comboZoneMesh = null; }
       const zoneSize = Math.max(0.2, getPerfectTol() * 2 * Math.max(1, 4 - combo * 0.3));
       const topBlock = active; // about to be pushed to stack
       const zoneGeo = new THREE.PlaneGeometry(
@@ -3354,6 +3358,10 @@ function spawnConfettiCeremony() {
 }
 
 function gameOver() {
+  // Reentrancy guard: gameOver() transitions to 'deathcam' as the first observable side-effect.
+  // If a stale setTimeout or duplicate path triggers a second call, bail before re-running
+  // saves, music stop, and scene cleanup (which would dispose already-disposed meshes).
+  if (state === 'deathcam') return;
   const isNewHigh = score > high;
   if (isNewHigh) { high = score; localStorage.setItem('stack_high_v3', String(high)); }
   // Daily challenge best
@@ -3933,20 +3941,20 @@ function tryEarnPowerup(comboVal) {
 
 function usePowerup(type) {
   if (state !== 'playing') return;
-  if (type === 'slowmo' && powerups.slowmo > 0) {
+  if (type === 'slowmo' && powerups.slowmo > 0 && !powerupStates.slowmoActive) {
     powerups.slowmo--;
     powerupStates.slowmoActive = true;
     powerupStates.slowmoCount = 3;
     savePowerups();
     updatePowerupUI();
     tone(400, 0.1, 'sine', 0.15);
-  } else if (type === 'magnet' && powerups.magnet > 0) {
+  } else if (type === 'magnet' && powerups.magnet > 0 && !powerupStates.magnetActive) {
     powerups.magnet--;
     powerupStates.magnetActive = true;
     savePowerups();
     updatePowerupUI();
     tone(500, 0.1, 'sine', 0.15);
-  } else if (type === 'shield' && powerups.shield > 0) {
+  } else if (type === 'shield' && powerups.shield > 0 && !powerupStates.shieldActive) {
     powerups.shield--;
     powerupStates.shieldActive = true;
     savePowerups();
@@ -4705,6 +4713,20 @@ function showMascotPopup() {
 }
 
 // ==================== INPUT ====================
+// One-time AudioContext unlock — iOS Safari leaves new AudioContexts in 'suspended' state
+// until a user gesture explicitly resumes them. Some audio paths (confetti SFX, bass drop)
+// don't call resume(); without this, they silently fail until the player taps to place.
+let _audioUnlocked = false;
+function unlockAudioContext() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch(e) {}
+}
+window.addEventListener('pointerdown', unlockAudioContext, { once: false, capture: true });
+
 function onTap(e) {
   if (state !== 'playing') return;
   if (bombDragActive) return; // don't place while dragging bomb
