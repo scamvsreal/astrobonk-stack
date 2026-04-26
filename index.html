@@ -2124,8 +2124,8 @@ function initializeDailyMissions() {
     dailyMissions = [];
     const used = new Set();
     for (let i = 0; i < 3; i++) {
-      let idx;
-      do { idx = Math.floor(seededRandom(today, i) * MISSION_TYPES.length); } while (used.has(idx));
+      let idx, attempt = 0;
+      do { idx = Math.floor(seededRandom(today, i + attempt * 7) * MISSION_TYPES.length); attempt++; } while (used.has(idx) && attempt < 50);
       used.add(idx);
       const type = MISSION_TYPES[idx];
       const targetIdx = Math.floor(seededRandom(today, i + 100) * type.targets.length);
@@ -2819,8 +2819,8 @@ function place() {
     // ═══ Wobble chain: perfect saves a wobbly block ═══
     if (lastBlockWobbly && wobbleBlock) {
       wobbleBlock.rotation.z = 0;
-      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX || wobbleBlock.position.x;
-      wobbleBlock.position.z = wobbleBlock.userData._wobbleOrigZ || wobbleBlock.position.z;
+      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX ?? wobbleBlock.position.x;
+      wobbleBlock.position.z = wobbleBlock.userData._wobbleOrigZ ?? wobbleBlock.position.z;
       lastBlockWobbly = false; wobbleBlock = null; wobbleTimer = 0;
       spawnScorePopup(active.position.clone(), 'SAVED IT! +5', true, 3);
       score += 5;
@@ -2873,7 +2873,7 @@ function place() {
         const ang = Math.random() * Math.PI * 2;
         particles.push({ mesh: m, vel: new THREE.Vector3(Math.cos(ang)*2.5, 2+Math.random()*2, Math.sin(ang)*2.5), spin: new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8), life: 0.7, max: 1.0 });
       }
-      const mysteryRoll = Math.random();
+      const mysteryRoll = getDailyRandom();
       let mysteryReward;
       if (mysteryRoll < 0.40) {
         bonkBombInventory += 3; updateBombHUD();
@@ -2959,7 +2959,7 @@ function place() {
     // Reset wobble if previous wobble expired or this cut wasn't terrible
     if (lastBlockWobbly && wobbleBlock && !isTerribleCut) {
       wobbleBlock.rotation.z = 0;
-      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX || wobbleBlock.position.x;
+      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX ?? wobbleBlock.position.x;
       lastBlockWobbly = false; wobbleBlock = null; wobbleTimer = 0;
     }
 
@@ -3872,7 +3872,7 @@ function tryEarnPowerup(comboVal) {
   if (comboVal < 5) return;
   // Base 20% at combo 5, +5% per extra combo, capped at 60%
   const chance = Math.min(0.60, 0.20 + (comboVal - 5) * 0.05);
-  if (Math.random() > chance) return;
+  if (getDailyRandom() > chance) return;
 
   // Pick a random power-up from the pool
   const pool = [
@@ -3882,7 +3882,7 @@ function tryEarnPowerup(comboVal) {
     { type: 'frostfield', weight: 1.5, icon: '\u2744', name: 'FROST FIELD', color: '#4dd0e1' },
   ];
   const totalW = pool.reduce((s, p) => s + p.weight, 0);
-  let roll = Math.random() * totalW;
+  let roll = getDailyRandom() * totalW;
   let picked = pool[0];
   for (const p of pool) {
     roll -= p.weight;
@@ -4486,14 +4486,18 @@ function transitionMusicRoot(newFreq) {
   const startFreq = musicState.currentRootFreq;
   const steps = 90; // slower transition
   let step = 0;
+  // Capture each oscillator's original ratio to the root BEFORE we start modifying
+  const oscRatios = musicState.oscs.map(o => {
+    try { return o.frequency.value / startFreq; } catch(e) { return 1; }
+  });
   const int = setInterval(() => {
     step++;
     const t = step / steps;
     const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // easeInOutQuad
     const freq = startFreq + (newFreq - startFreq) * ease;
 
-    musicState.oscs.forEach(o => {
-      try { o.frequency.setValueAtTime(freq * (o.frequency.value / musicState.currentRootFreq || 1), audioCtx.currentTime); } catch(e) {}
+    musicState.oscs.forEach((o, i) => {
+      try { o.frequency.setValueAtTime(freq * (oscRatios[i] || 1), audioCtx.currentTime); } catch(e) {}
     });
 
     if (step >= steps) { clearInterval(int); musicState.currentRootFreq = newFreq; }
@@ -4648,15 +4652,20 @@ function spawnLandingImpact(pos, isPerfect, comboVal) {
 function slamBlock(block) {
   if (!block) return;
   const startTime = performance.now();
-  const origY = block.scale.y;
+  const origScaleX = block.scale.x;
+  const origScaleY = block.scale.y;
+  const origScaleZ = block.scale.z;
   function animSlam() {
     const t = (performance.now() - startTime) / 300;
-    if (t >= 1) { block.scale.y = origY; return; }
+    if (t >= 1) { block.scale.set(origScaleX, origScaleY, origScaleZ); return; }
     // squish down then spring up
     const curve = t < 0.3 ? 1 - (t/0.3)*0.3 : 0.7 + (t-0.3)/0.7 * 0.3;
     const spring = 1 + Math.sin(t * Math.PI * 2) * 0.12 * (1-t);
-    block.scale.y = origY * curve * spring;
-    block.scale.x = origY / (curve * spring) * origY; // compensate
+    const yScale = curve * spring;
+    const xzScale = 1 / Math.sqrt(yScale); // volume-preserving compensation
+    block.scale.y = origScaleY * yScale;
+    block.scale.x = origScaleX * xzScale;
+    block.scale.z = origScaleZ * xzScale;
     requestAnimationFrame(animSlam);
   }
   animSlam();
@@ -4865,7 +4874,7 @@ if (musicState.isMuted) document.getElementById('btnMute').classList.add('muted'
 checkActiveEvent();
 applySkin(equippedSkin);
 updateCoinHUD();
-buildBase(); showMenu();
+showMenu();
 let lastT = performance.now(), clock = 0;
 function loop() {
   const now = performance.now();
@@ -4889,10 +4898,10 @@ function loop() {
     wobbleTimer -= dt;
     const wobbleAmt = Math.sin(clock * 15) * 0.04 * (wobbleTimer / 1.0);
     wobbleBlock.rotation.z = wobbleAmt;
-    wobbleBlock.position.x = (wobbleBlock.userData._wobbleOrigX || wobbleBlock.position.x) + Math.sin(clock * 12) * 0.02 * (wobbleTimer / 1.0);
+    wobbleBlock.position.x = (wobbleBlock.userData._wobbleOrigX ?? wobbleBlock.position.x) + Math.sin(clock * 12) * 0.02 * (wobbleTimer / 1.0);
     if (wobbleTimer <= 0) {
       wobbleBlock.rotation.z = 0;
-      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX || wobbleBlock.position.x;
+      wobbleBlock.position.x = wobbleBlock.userData._wobbleOrigX ?? wobbleBlock.position.x;
       // Wobble expired — disarm chain collapse so next normal cut won't collapse
       lastBlockWobbly = false; wobbleBlock = null; wobbleTimer = 0;
     }
