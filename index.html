@@ -916,6 +916,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05060d, 0.018);
 
+// Use bgCanvas aurora as scene background (rendered through EffectComposer pipeline)
+const bgCanvasEl = document.getElementById('bg');
+const bgTexture = new THREE.CanvasTexture(bgCanvasEl);
+bgTexture.colorSpace = THREE.SRGBColorSpace;
+scene.background = bgTexture;
+
 const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
 const CAM_OFFSET = new THREE.Vector3(7.5, 6, -7.5);
 camera.position.copy(CAM_OFFSET);
@@ -4984,6 +4990,9 @@ function loop() {
     camera.lookAt(sx, camLook.y+sy, 0);
     camera.rotation.z = cameraTilt;
   }
+
+  // Update aurora background texture from 2D canvas each frame
+  bgTexture.needsUpdate = true;
 
   if (useComposer) {
     try { composer.render(); } catch(e) { useComposer = false; renderer.render(scene, camera); }
