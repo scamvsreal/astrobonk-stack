@@ -916,11 +916,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05060d, 0.018);
 
-// Use bgCanvas aurora as scene background (rendered through EffectComposer pipeline)
-const bgCanvasEl = document.getElementById('bg');
-const bgTexture = new THREE.CanvasTexture(bgCanvasEl);
-bgTexture.colorSpace = THREE.SRGBColorSpace;
-scene.background = bgTexture;
+// Aurora is drawn into <canvas id="bg"> behind the WebGL canvas (renderer has alpha:true).
+// Do NOT use scene.background = CanvasTexture: in Three.js r160+, a 2D Texture assigned
+// to scene.background is rendered as an equirectangular envmap wrapped on a cube around
+// the camera, which distorts the image and flips blobs vertically (the "upside-down
+// blocks" symptom). Letting the 2D bg canvas show through the transparent WebGL canvas
+// (alpha:true) avoids the distortion entirely.
 
 const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
 const CAM_OFFSET = new THREE.Vector3(7.5, 6, -7.5);
@@ -4990,9 +4991,6 @@ function loop() {
     camera.lookAt(sx, camLook.y+sy, 0);
     camera.rotation.z = cameraTilt;
   }
-
-  // Update aurora background texture from 2D canvas each frame
-  bgTexture.needsUpdate = true;
 
   if (useComposer) {
     try { composer.render(); } catch(e) { useComposer = false; renderer.render(scene, camera); }
